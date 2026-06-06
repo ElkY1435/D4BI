@@ -1820,20 +1820,22 @@ async function fetchCryptoData() {
   }
 }
 
-// ===== FETCH STOCKS (via Render proxy) =====
+// ===== FETCH STOCKS (via Render proxy — Alpha Vantage) =====
 async function fetchStockData() {
   try {
     const res  = await fetch('https://d4bi.onrender.com/stocks/prices');
     if (!res.ok) throw new Error('Stocks proxy status ' + res.status);
     const data = await res.json();
-    const quotes = data?.quoteResponse?.result || [];
+    const quotes = data?.quotes || [];
     quotes.forEach(q => {
-      const sym = q.symbol === '^GSPC' ? 'S&P500' : q.symbol;
+      const sym = q.symbol === 'SPY' ? 'S&P500' : q.symbol;
       if (MARKET_DATA[sym] !== undefined) {
-        MARKET_DATA[sym].price  = Math.round((q.regularMarketPrice || 0) * 100) / 100;
-        MARKET_DATA[sym].change = Math.round((q.regularMarketChangePercent || 0) * 100) / 100;
+        MARKET_DATA[sym].price  = Math.round((q.price || 0) * 100) / 100;
+        MARKET_DATA[sym].change = Math.round((q.change_pct || 0) * 100) / 100;
       }
     });
+    // Disparar refresh en background para símbolos faltantes
+    refreshMissingStocks();
     return true;
   } catch(e) {
     console.warn('Stocks proxy error:', e);
@@ -1841,20 +1843,39 @@ async function fetchStockData() {
   }
 }
 
-// ===== FETCH HISTORICAL STOCKS (via Render proxy) =====
+// Refresca símbolos que no tienen precio aún (Alpha Vantage limite 25/día)
+async function refreshMissingStocks() {
+  const missing = ['MSFT','AAPL','GOOGL','AMZN','META','ORCL','CRM','SAP','MELI','YPF','S&P500']
+    .filter(s => MARKET_DATA[s].price === 0);
+  for (const sym of missing.slice(0, 3)) {
+    try {
+      const apiSym = sym === 'S&P500' ? 'SPY' : sym;
+      const res = await fetch(`https://d4bi.onrender.com/stocks/refresh?symbol=${apiSym}`);
+      const q   = await res.json();
+      if (q.price) {
+        MARKET_DATA[sym].price  = Math.round(q.price * 100) / 100;
+        MARKET_DATA[sym].change = Math.round((q.change_pct || 0) * 100) / 100;
+      }
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  renderHomeCards();
+  renderMarketCards();
+  renderStocksCards();
+}
+
+// ===== FETCH HISTORICAL STOCKS (via Render proxy — Alpha Vantage) =====
 async function fetchHistorical(symbol, days = 30) {
   try {
-    const res  = await fetch(`https://d4bi.onrender.com/stocks/history/${symbol}?days=${days}`);
+    const apiSym = symbol === 'S&P500' ? 'SPY' : symbol;
+    const res  = await fetch(`https://d4bi.onrender.com/stocks/history/${apiSym}?days=${days}`);
     if (!res.ok) throw new Error('Stock hist proxy error ' + res.status);
     const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result) return null;
-    const timestamps = result.timestamp || [];
-    const closes     = result.indicators?.quote?.[0]?.close || [];
-    return timestamps.map((ts, i) => ({
-      date:  new Date(ts * 1000).toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' }),
-      price: closes[i] ? Math.round(closes[i] * 100) / 100 : null
-    })).filter(d => d.price !== null);
+    if (!Array.isArray(data)) return null;
+    return data.map(d => ({
+      date:  d.date,
+      price: d.price
+    }));
   } catch(e) {
     console.warn('Stock hist proxy error:', e);
     return null;
